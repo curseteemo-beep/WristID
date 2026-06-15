@@ -1,47 +1,39 @@
 import { NextRequest, NextResponse } from 'next/server';
-import OpenAI from 'openai';
 import { JEWELRY_COMPLETE_PROMPT, type JewelryUserInfo } from '@/lib/prompts';
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const GEMINI_URL =
+  'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent';
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json();
-    const { image, jewelryInfo } = body as { image: string; jewelryInfo: JewelryUserInfo };
+    const { image, jewelryInfo } = await req.json() as { image: string; jewelryInfo: JewelryUserInfo };
+    if (!image || !jewelryInfo) return NextResponse.json({ error: 'Missing data' }, { status: 400 });
 
-    if (!image || !jewelryInfo) {
-      return NextResponse.json({ error: 'Missing image or jewelry info' }, { status: 400 });
-    }
-
-    const base64 = image.startsWith('data:') ? image : `data:image/jpeg;base64,${image}`;
+    const base64 = image.replace(/^data:image\/\w+;base64,/, '');
     const prompt = JEWELRY_COMPLETE_PROMPT(jewelryInfo);
 
-    const response = await openai.chat.completions.create({
-      model: 'gpt-4o',
-      max_tokens: 1200,
-      temperature: 0.2,
-      messages: [
-        {
-          role: 'user',
-          content: [
-            { type: 'image_url', image_url: { url: base64, detail: 'high' } },
-            { type: 'text', text: prompt },
+    const res = await fetch(`${GEMINI_URL}?key=${process.env.GEMINI_API_KEY}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{
+          parts: [
+            { text: prompt },
+            { inlineData: { mimeType: 'image/jpeg', data: base64 } },
           ],
-        },
-      ],
+        }],
+        generationConfig: { temperature: 0.1, maxOutputTokens: 1200 },
+      }),
     });
 
-    const rawContent = response.choices[0]?.message?.content ?? '';
-    const jsonMatch = rawContent.match(/\{[\s\S]*\}/);
+    const data = await res.json();
+    const text: string = data.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+    const match = text.match(/\{[\s\S]*\}/);
+    if (!match) return NextResponse.json({ error: 'Respuesta inválida' }, { status: 502 });
 
-    if (!jsonMatch) {
-      return NextResponse.json({ error: 'Invalid model response' }, { status: 502 });
-    }
-
-    return NextResponse.json(JSON.parse(jsonMatch[0]));
+    return NextResponse.json(JSON.parse(match[0]));
   } catch (err) {
-    const message = err instanceof Error ? err.message : 'Unknown error';
     console.error('[jewelry-complete]', err);
-    return NextResponse.json({ error: message }, { status: 500 });
+    return NextResponse.json({ error: String(err) }, { status: 500 });
   }
 }

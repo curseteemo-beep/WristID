@@ -1,65 +1,39 @@
 import { NextRequest, NextResponse } from 'next/server';
-import OpenAI from 'openai';
 import { IDENTIFY_PROMPT } from '@/lib/prompts';
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const GEMINI_URL =
+  'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent';
 
 export async function POST(req: NextRequest) {
   try {
     const { image } = await req.json();
+    if (!image) return NextResponse.json({ error: 'No image' }, { status: 400 });
 
-    if (!image) {
-      return NextResponse.json({ error: 'No image provided' }, { status: 400 });
-    }
+    // Strip data URI prefix → raw base64
+    const base64 = image.replace(/^data:image\/\w+;base64,/, '');
 
-    // Strip data URI prefix if present, keep only base64
-    const base64 = image.startsWith('data:') ? image : `data:image/jpeg;base64,${image}`;
-
-    const response = await openai.chat.completions.create({
-      model: 'gpt-4o',
-      max_tokens: 1200,
-      temperature: 0.2, // Low temp = more consistent/accurate IDs
-      messages: [
-        {
-          role: 'user',
-          content: [
-            {
-              type: 'image_url',
-              image_url: { url: base64, detail: 'high' },
-            },
-            {
-              type: 'text',
-              text: IDENTIFY_PROMPT,
-            },
+    const res = await fetch(`${GEMINI_URL}?key=${process.env.GEMINI_API_KEY}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{
+          parts: [
+            { text: IDENTIFY_PROMPT },
+            { inlineData: { mimeType: 'image/jpeg', data: base64 } },
           ],
-        },
-      ],
+        }],
+        generationConfig: { temperature: 0.1, maxOutputTokens: 1200 },
+      }),
     });
 
-    const rawContent = response.choices[0]?.message?.content ?? '';
+    const data = await res.json();
+    const text: string = data.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+    const match = text.match(/\{[\s\S]*\}/);
+    if (!match) return NextResponse.json({ error: 'Respuesta inválida del modelo' }, { status: 502 });
 
-    // Parse JSON — strip any accidental markdown fences
-    const jsonMatch = rawContent.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      return NextResponse.json(
-        { error: 'Model returned non-JSON response', raw: rawContent },
-        { status: 502 }
-      );
-    }
-
-    const result = JSON.parse(jsonMatch[0]);
-    return NextResponse.json(result);
+    return NextResponse.json(JSON.parse(match[0]));
   } catch (err) {
-    const message = err instanceof Error ? err.message : 'Unknown error';
-
-    if (message.includes('insufficient_quota') || message.includes('billing')) {
-      return NextResponse.json(
-        { error: 'API quota exceeded. Check your OpenAI billing.' },
-        { status: 402 }
-      );
-    }
-
     console.error('[identify]', err);
-    return NextResponse.json({ error: message }, { status: 500 });
+    return NextResponse.json({ error: String(err) }, { status: 500 });
   }
 }
