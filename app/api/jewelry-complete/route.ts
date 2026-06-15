@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import type { JewelryUserInfo } from '@/lib/prompts';
 
 const GEMINI_URL =
-  'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent';
+  'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent';
 
 function buildPrompt(info: JewelryUserInfo): string {
   return `You are a master gemologist and fine jewelry appraiser. The user provided these details about the jewelry in the image:
