@@ -1,26 +1,24 @@
 import { NextRequest, NextResponse } from 'next/server';
 import type { JewelryUserInfo } from '@/lib/prompts';
 
-const GEMINI_URL =
-  'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-001:generateContent';
+const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
 
 function buildPrompt(info: JewelryUserInfo): string {
-  return `You are a master gemologist and fine jewelry appraiser. The user provided these details about the jewelry in the image:
+  return `You are a master gemologist and fine jewelry appraiser with 30+ years valuing pieces for Sotheby's. The user provided these details:
 - Type: ${info.jewelryType}
 - Metal: ${info.metal}${info.metalPurity ? ` (${info.metalPurity})` : ''}
 - Stones: ${info.stones || 'None'}
 - Stone quality: ${info.stoneQuality || 'Unknown'}
 - Weight: ${info.weight || 'Unknown'} grams
-- Brand: ${info.brand || 'Unknown'}
+- Brand: ${info.brand || 'Unknown / unsigned'}
 
 Respond ONLY with a raw JSON object — no markdown, no code fences:
-
 {
   "type": "jewelry",
   "subtype": "${info.jewelryType}",
   "confidence": 80,
   "brand": "Unsigned Fine Jewelry",
-  "description": "A beautiful piece...",
+  "description": "Description here.",
   "estimatedWeight": 12,
   "materials": {
     "metal": "18k Yellow Gold",
@@ -41,11 +39,10 @@ Respond ONLY with a raw JSON object — no markdown, no code fences:
     { "category": "real_estate", "equivalent": "1 month rent in Manhattan", "price": 5000 },
     { "category": "experience", "equivalent": "7-day Caribbean cruise for two", "price": 5200 }
   ],
-  "fun_fact": "Diamonds are the hardest natural substance on Earth.",
+  "fun_fact": "Interesting fact about this gem or jewelry type.",
   "care_tips": ["Clean with warm soapy water", "Store separately", "Remove before exercise"]
 }
-
-RAW JSON ONLY. No markdown. No backticks.`;
+RAW JSON ONLY.`;
 }
 
 function extractJSON(text: string): object | null {
@@ -61,30 +58,34 @@ export async function POST(req: NextRequest) {
     const { image, jewelryInfo } = await req.json() as { image: string; jewelryInfo: JewelryUserInfo };
     if (!image || !jewelryInfo) return NextResponse.json({ error: 'Missing data' }, { status: 400 });
 
-    const base64 = image.replace(/^data:image\/\w+;base64,/, '');
+    const base64 = image.startsWith('data:') ? image : `data:image/jpeg;base64,${image}`;
 
-    const res = await fetch(`${GEMINI_URL}?key=${process.env.GEMINI_API_KEY}`, {
+    const res = await fetch(GROQ_URL, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${process.env.GROQ_API_KEY}`,
+      },
       body: JSON.stringify({
-        contents: [{
-          parts: [
-            { text: buildPrompt(jewelryInfo) },
-            { inlineData: { mimeType: 'image/jpeg', data: base64 } },
+        model: 'meta-llama/llama-4-scout-17b-16e-instruct',
+        temperature: 0.1,
+        max_tokens: 1200,
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'text', text: buildPrompt(jewelryInfo) },
+            { type: 'image_url', image_url: { url: base64 } },
           ],
         }],
-        generationConfig: { temperature: 0.1, maxOutputTokens: 1200 },
       }),
     });
 
     const data = await res.json();
-    if (!res.ok) {
-      return NextResponse.json({ error: `Gemini error: ${data?.error?.message ?? res.status}` }, { status: 502 });
-    }
+    if (!res.ok) return NextResponse.json({ error: `Groq error: ${data?.error?.message ?? res.status}` }, { status: 502 });
 
-    const text: string = data.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+    const text: string = data.choices?.[0]?.message?.content ?? '';
     const parsed = extractJSON(text);
-    if (!parsed) return NextResponse.json({ error: 'Respuesta inválida', raw: text.slice(0, 200) }, { status: 502 });
+    if (!parsed) return NextResponse.json({ error: 'Respuesta inválida' }, { status: 502 });
 
     return NextResponse.json(parsed);
   } catch (err) {
